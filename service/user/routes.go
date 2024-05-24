@@ -1,12 +1,14 @@
 package user
 
 import (
-	"github.com/go-playground/validator/v10"
+	"ecom/config"
 	"ecom/service/auth"
 	"ecom/types"
 	"ecom/utils"
 	"fmt"
 	"net/http"
+
+	"github.com/go-playground/validator/v10"
 
 	"github.com/gorilla/mux"
 )
@@ -24,7 +26,35 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 }
 
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
-	
+	var payload types.LoginUserPayload
+	if err := utils.ParseJSON(r, &payload); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err)
+	}
+
+	if err := utils.Validate.Struct(payload); err != nil {
+		errors := err.(validator.ValidationErrors)
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid payload %v", errors))
+		return
+	}
+
+	u, err :=  h.store.GetUserByEmail(payload.Email)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("not found, invalid email or password"))
+		return
+	}
+
+	if !auth.ComparePassword(u.Password, []byte(payload.Password)) {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid email or password"))
+		return
+	}
+
+	secret := []byte(config.Envs.JWRSecret)
+	token, err := auth.CreateJWT(secret, u.ID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err)
+		return
+	}
+	utils.WriteJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
 func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -41,8 +71,9 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	
 	_, err := h.store.GetUserByEmail(payload.Email)
-	if err != nil{
+	if err == nil{
 		utils.WriteError(w, http.StatusBadRequest, fmt.Errorf("user with %s already exists", payload.Email))
+		return
 	}
 
 	hashedPassword, err := auth.HashPassword(payload.Password)
